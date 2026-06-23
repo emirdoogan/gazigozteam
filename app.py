@@ -7,6 +7,8 @@ from time import perf_counter
 import traceback
 from urllib.request import Request, urlopen
 
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -130,17 +132,13 @@ def resolve_model_path():
 
 @st.cache_resource
 def load_segmentation_model(path):
-    m = load_model(
+    return load_model(
         path,
         compile=False,
         custom_objects={
             "GroupNormalization": GroupNormalization,
         },
     )
-    m.compile(optimizer="adam",
-              loss="categorical_crossentropy",
-              metrics=["accuracy"])
-    return m
 
 
 def init_session_state():
@@ -313,8 +311,7 @@ st.caption("Upload an OCT image, review the segmentation, define an ROI, and kee
 
 with st.sidebar:
     st.header("Input Settings")
-    resolved_model_path = resolve_model_path()
-    st.caption(f"Model: {resolved_model_path or 'No .keras model found'}")
+    st.caption("Model loads when you upload an image.")
     scale_px = st.number_input(
         "Scale bar length in pixels (200 µm)",
         min_value=1,
