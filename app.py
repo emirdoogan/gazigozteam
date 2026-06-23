@@ -8,6 +8,10 @@ import traceback
 from urllib.request import Request, urlopen
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "1")
+os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
 
 import cv2
 import numpy as np
@@ -130,9 +134,16 @@ def resolve_model_path():
 
 @st.cache_resource
 def load_segmentation_model(path):
+    import tensorflow as tf
     # Delay TensorFlow/Keras imports until the user actually uploads an image.
     from tensorflow.keras.models import load_model
     from simple_unet import GroupNormalization
+
+    try:
+        tf.config.threading.set_intra_op_parallelism_threads(1)
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+    except Exception:
+        pass
 
     return load_model(
         path,

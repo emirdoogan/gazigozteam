@@ -1,5 +1,5 @@
 streamlit==1.58.0
-tensorflow==2.21.0
+tensorflow-cpu==2.21.0
 keras==3.14.0
 numpy>=1.26,<3
 pandas>=2.2,<3.1
