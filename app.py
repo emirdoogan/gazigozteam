@@ -13,10 +13,8 @@ import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
-from tensorflow.keras.models import load_model
 
 from raw_preprocessing import crop_raw_image
-from simple_unet import GroupNormalization
 
 # --- Constants ---
 MODEL_CANDIDATES = [
@@ -132,6 +130,10 @@ def resolve_model_path():
 
 @st.cache_resource
 def load_segmentation_model(path):
+    # Delay TensorFlow/Keras imports until the user actually uploads an image.
+    from tensorflow.keras.models import load_model
+    from simple_unet import GroupNormalization
+
     return load_model(
         path,
         compile=False,
