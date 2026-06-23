@@ -1,0 +1,11 @@
+__pycache__/
+.DS_Store
+.ipynb_checkpoints/
+logs/
+cropped_output/
+maskedoutputs/
+data/
+*.keras
+*.h5
+*.csv
+/tmp/
