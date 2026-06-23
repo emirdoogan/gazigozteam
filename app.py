@@ -1,9 +1,11 @@
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import shutil
 from time import perf_counter
-from urllib.request import urlopen
+import traceback
+from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
@@ -53,6 +55,43 @@ PALETTE = {
     11:(255, 165,   0),
     12:(180, 120, 255),
 }
+
+# #region debug-point A:reporter
+def report_debug_event(hypothesis_id, location, message, data=None, run_id="pre-fix"):
+    env_path = Path(".dbg/streamlit-upload-crash.env")
+    server_url = "http://127.0.0.1:7777/event"
+    session_id = "streamlit-upload-crash"
+
+    try:
+        env_text = env_path.read_text()
+        for line in env_text.splitlines():
+            if line.startswith("DEBUG_SERVER_URL="):
+                server_url = line.split("=", 1)[1].strip()
+            elif line.startswith("DEBUG_SESSION_ID="):
+                session_id = line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+
+    payload = {
+        "sessionId": session_id,
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "msg": f"[DEBUG] {message}",
+        "data": data or {},
+    }
+
+    try:
+        request = Request(
+            server_url,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request, timeout=0.25):
+            pass
+    except Exception:
+        pass
+# #endregion
 
 # --- Cache model load as a resource ---
 def get_runtime_config(name, default=None):
@@ -314,27 +353,93 @@ if not uploaded:
 status = st.status("Processing uploaded EDI image...", expanded=False)
 perf = {}
 
-start = perf_counter()
-file_bytes = np.frombuffer(uploaded.read(), np.uint8)
-img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
-perf["decode"] = perf_counter() - start
-if img_bgr is None:
-    status.update(label="Image decoding failed.", state="error")
-    st.error("Couldn't decode image!")
-    st.stop()
+# #region debug-point A:upload-received
+report_debug_event(
+    "A",
+    "app.py:upload",
+    "Upload received",
+    {
+        "file_name": uploaded.name,
+        "file_type": uploaded.type,
+        "file_size": getattr(uploaded, "size", None),
+    },
+)
+# #endregion
 
-status.update(label="Preparing OCT image...")
-start = perf_counter()
-if img_bgr.ndim == 3 and img_bgr.shape[2] > 1:
-    raw_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-else:
-    raw_gray = img_bgr.copy()
+try:
+    start = perf_counter()
+    file_bytes = np.frombuffer(uploaded.read(), np.uint8)
+    img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_UNCHANGED)
+    perf["decode"] = perf_counter() - start
+    if img_bgr is None:
+        status.update(label="Image decoding failed.", state="error")
+        st.error("Couldn't decode image!")
+        # #region debug-point A:decode-none
+        report_debug_event(
+            "A",
+            "app.py:decode",
+            "Image decode returned None",
+            {"buffer_length": int(file_bytes.size)},
+        )
+        # #endregion
+        st.stop()
 
-cropped = crop_raw_image(raw_gray)
-resized = cv2.resize(cropped, (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
-raw_norm = resized.astype(np.float32) / 255.0
-raw_3d = raw_norm[..., np.newaxis]  # (H,W,1)
-perf["preprocess"] = perf_counter() - start
+    # #region debug-point B:decode-success
+    report_debug_event(
+        "B",
+        "app.py:decode",
+        "Image decoded successfully",
+        {
+            "decode_seconds": round(perf["decode"], 4),
+            "decoded_shape": list(img_bgr.shape),
+            "decoded_dtype": str(img_bgr.dtype),
+        },
+    )
+    # #endregion
+
+    status.update(label="Preparing OCT image...")
+    start = perf_counter()
+    if img_bgr.ndim == 3 and img_bgr.shape[2] > 1:
+        raw_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    else:
+        raw_gray = img_bgr.copy()
+
+    cropped = crop_raw_image(raw_gray)
+    resized = cv2.resize(cropped, (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
+    raw_norm = resized.astype(np.float32) / 255.0
+    raw_3d = raw_norm[..., np.newaxis]  # (H,W,1)
+    perf["preprocess"] = perf_counter() - start
+
+    # #region debug-point B:preprocess-success
+    report_debug_event(
+        "B",
+        "app.py:preprocess",
+        "Preprocess completed",
+        {
+            "preprocess_seconds": round(perf["preprocess"], 4),
+            "gray_shape": list(raw_gray.shape),
+            "cropped_shape": list(cropped.shape),
+            "resized_shape": list(resized.shape),
+            "raw_min": float(raw_norm.min()),
+            "raw_max": float(raw_norm.max()),
+            "raw_mean": float(raw_norm.mean()),
+        },
+    )
+    # #endregion
+except Exception as exc:
+    # #region debug-point B:preprocess-error
+    report_debug_event(
+        "B",
+        "app.py:preprocess",
+        "Decode or preprocess failed",
+        {
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        },
+    )
+    # #endregion
+    raise
 
 status.update(label="Loading segmentation model...")
 model_path = resolve_model_path()
@@ -346,17 +451,89 @@ if model_path is None:
     )
     st.stop()
 
-start = perf_counter()
-model = load_segmentation_model(model_path)
-perf["load_model"] = perf_counter() - start
+try:
+    # #region debug-point A:model-path
+    report_debug_event(
+        "A",
+        "app.py:model",
+        "Resolved model path",
+        {
+            "model_path": model_path,
+            "model_exists": Path(model_path).exists(),
+            "model_size_mb": round(Path(model_path).stat().st_size / (1024 * 1024), 2),
+        },
+    )
+    # #endregion
 
-status.update(label="Running segmentation inference...")
-start = perf_counter()
-X_batch = raw_3d[np.newaxis, ...].astype(np.float32)
-pred = run_segmentation_inference(model, X_batch)[0]
-mask = np.argmax(pred, axis=-1).astype(np.uint8)
-perf["predict"] = perf_counter() - start
-status.update(label="EDI image processed successfully.", state="complete")
+    start = perf_counter()
+    model = load_segmentation_model(model_path)
+    perf["load_model"] = perf_counter() - start
+
+    # #region debug-point A:model-loaded
+    report_debug_event(
+        "A",
+        "app.py:model",
+        "Model loaded successfully",
+        {
+            "load_model_seconds": round(perf["load_model"], 4),
+            "input_shape": [dim if dim is not None else -1 for dim in model.input_shape],
+            "output_shape": [dim if dim is not None else -1 for dim in model.output_shape],
+            "parameter_count": int(model.count_params()),
+        },
+    )
+    # #endregion
+
+    status.update(label="Running segmentation inference...")
+    start = perf_counter()
+    X_batch = raw_3d[np.newaxis, ...].astype(np.float32)
+
+    # #region debug-point C:predict-start
+    report_debug_event(
+        "C",
+        "app.py:predict",
+        "Starting model inference",
+        {
+            "batch_shape": list(X_batch.shape),
+            "batch_dtype": str(X_batch.dtype),
+            "batch_min": float(X_batch.min()),
+            "batch_max": float(X_batch.max()),
+        },
+    )
+    # #endregion
+
+    pred = run_segmentation_inference(model, X_batch)[0]
+    mask = np.argmax(pred, axis=-1).astype(np.uint8)
+    perf["predict"] = perf_counter() - start
+    status.update(label="EDI image processed successfully.", state="complete")
+
+    # #region debug-point C:predict-success
+    report_debug_event(
+        "C",
+        "app.py:predict",
+        "Inference completed",
+        {
+            "predict_seconds": round(perf["predict"], 4),
+            "prediction_shape": list(pred.shape),
+            "prediction_dtype": str(pred.dtype),
+            "mask_shape": list(mask.shape),
+            "mask_unique_classes": [int(v) for v in np.unique(mask)],
+        },
+    )
+    # #endregion
+except Exception as exc:
+    # #region debug-point C:predict-error
+    report_debug_event(
+        "C",
+        "app.py:predict",
+        "Model load or inference failed",
+        {
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        },
+    )
+    # #endregion
+    raise
 
 color_mask = np.zeros((SIZE, SIZE, 3), dtype=np.uint8)
 for cls, col in PALETTE.items():
@@ -484,15 +661,45 @@ fmt = {
 }
 
 if valid_roi:
-    df = compute_layer_measurements(
-        mask,
-        raw_norm,
-        CLASS_NAMES,
-        N_CLASSES,
-        um_per_px,
-        col_range=(col_start, col_end),
-    )
-    comp_df = compute_composite_measurements(df)
+    try:
+        df = compute_layer_measurements(
+            mask,
+            raw_norm,
+            CLASS_NAMES,
+            N_CLASSES,
+            um_per_px,
+            col_range=(col_start, col_end),
+        )
+        comp_df = compute_composite_measurements(df)
+
+        # #region debug-point D:measurements-success
+        report_debug_event(
+            "D",
+            "app.py:measurements",
+            "ROI measurements computed",
+            {
+                "roi_range": [int(col_start), int(col_end)],
+                "roi_width_px": int(roi_width_px),
+                "layer_rows": int(len(df)),
+                "composite_rows": int(len(comp_df)),
+                "layer_names": df["Layer"].tolist(),
+            },
+        )
+        # #endregion
+    except Exception as exc:
+        # #region debug-point D:measurements-error
+        report_debug_event(
+            "D",
+            "app.py:measurements",
+            "Measurement computation failed",
+            {
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        # #endregion
+        raise
 
     with measurement_tab:
         st.subheader("ROI Layer Measurements")
