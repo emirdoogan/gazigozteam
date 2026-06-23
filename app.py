@@ -3,6 +3,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
+import tempfile
 from time import perf_counter
 import traceback
 from urllib.request import Request, urlopen
@@ -303,13 +306,81 @@ def measurement_download_bytes(df):
     return df.to_csv(index=False).encode()
 
 
-def run_segmentation_inference(model, batch):
-    # A direct forward pass is more reliable than model.predict() in this app's
-    # Streamlit runtime and avoids the extra Keras prediction loop.
-    pred = model(batch, training=False)
-    if hasattr(pred, "numpy"):
-        pred = pred.numpy()
-    return pred
+def run_segmentation_inference(model_path, batch):
+    worker_script = """
+import os
+import sys
+import numpy as np
+
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "1")
+os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
+
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from simple_unet import GroupNormalization
+
+try:
+    tf.config.threading.set_intra_op_parallelism_threads(1)
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+except Exception:
+    pass
+
+input_path, output_path, model_path = sys.argv[1], sys.argv[2], sys.argv[3]
+batch = np.load(input_path)
+model = load_model(
+    model_path,
+    compile=False,
+    custom_objects={"GroupNormalization": GroupNormalization},
+)
+pred = model(batch, training=False)
+if hasattr(pred, "numpy"):
+    pred = pred.numpy()
+np.save(output_path, pred)
+"""
+
+    with tempfile.TemporaryDirectory(prefix="edi_infer_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        input_path = tmp_path / "input.npy"
+        output_path = tmp_path / "output.npy"
+        np.save(input_path, batch)
+
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = "-1"
+        env["TF_ENABLE_ONEDNN_OPTS"] = "0"
+        env["OMP_NUM_THREADS"] = "1"
+        env["TF_NUM_INTRAOP_THREADS"] = "1"
+        env["TF_NUM_INTEROP_THREADS"] = "1"
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                worker_script,
+                str(input_path),
+                str(output_path),
+                str(model_path),
+            ],
+            cwd=str(Path(__file__).resolve().parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+
+        if result.returncode != 0:
+            stderr_tail = (result.stderr or result.stdout or "").strip()[-4000:]
+            raise RuntimeError(
+                "Inference worker failed with return code "
+                f"{result.returncode}. Output: {stderr_tail}"
+            )
+
+        if not output_path.exists():
+            raise RuntimeError("Inference worker finished without writing predictions.")
+
+        return np.load(output_path)
 
 # --- App UI ---
 st.set_page_config(
@@ -475,20 +546,13 @@ try:
     )
     # #endregion
 
-    start = perf_counter()
-    model = load_segmentation_model(model_path)
-    perf["load_model"] = perf_counter() - start
-
     # #region debug-point A:model-loaded
     report_debug_event(
         "A",
         "app.py:model",
-        "Model loaded successfully",
+        "Model load deferred to isolated inference worker",
         {
-            "load_model_seconds": round(perf["load_model"], 4),
-            "input_shape": [dim if dim is not None else -1 for dim in model.input_shape],
-            "output_shape": [dim if dim is not None else -1 for dim in model.output_shape],
-            "parameter_count": int(model.count_params()),
+            "worker_strategy": "subprocess",
         },
     )
     # #endregion
@@ -496,6 +560,7 @@ try:
     status.update(label="Running segmentation inference...")
     start = perf_counter()
     X_batch = raw_3d[np.newaxis, ...].astype(np.float32)
+    perf["load_model"] = 0.0
 
     # #region debug-point C:predict-start
     report_debug_event(
@@ -511,7 +576,7 @@ try:
     )
     # #endregion
 
-    pred = run_segmentation_inference(model, X_batch)[0]
+    pred = run_segmentation_inference(model_path, X_batch)[0]
     mask = np.argmax(pred, axis=-1).astype(np.uint8)
     perf["predict"] = perf_counter() - start
     status.update(label="EDI image processed successfully.", state="complete")
