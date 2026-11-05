@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -16,6 +17,44 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "1")
 os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
 
+# #region debug-point A:pre-native-import
+try:
+    _debug_server_url = "http://127.0.0.1:7777/event"
+    _debug_session_id = "numpy-arch-mismatch"
+    _debug_env_path = Path(".dbg/numpy-arch-mismatch.env")
+    if _debug_env_path.exists():
+        for _debug_line in _debug_env_path.read_text().splitlines():
+            if _debug_line.startswith("DEBUG_SERVER_URL="):
+                _debug_server_url = _debug_line.split("=", 1)[1].strip()
+            elif _debug_line.startswith("DEBUG_SESSION_ID="):
+                _debug_session_id = _debug_line.split("=", 1)[1].strip()
+    _debug_payload = {
+        "sessionId": _debug_session_id,
+        "runId": "post-fix",
+        "hypothesisId": "A",
+        "location": "app.py:pre-native-import",
+        "msg": "[DEBUG] Native import environment captured before cv2/numpy load",
+        "data": {
+            "python_executable": sys.executable,
+            "python_version": sys.version,
+            "sys_platform": sys.platform,
+            "cwd": os.getcwd(),
+            "pid": os.getpid(),
+            "edi_support_dir": os.environ.get("EDI_OCT_SUPPORT_DIR"),
+            "pythonhome": os.environ.get("PYTHONHOME"),
+            "pythonpath": os.environ.get("PYTHONPATH"),
+            "dyld_framework_path": os.environ.get("DYLD_FRAMEWORK_PATH"),
+            "dyld_library_path": os.environ.get("DYLD_LIBRARY_PATH"),
+            "uname_m": subprocess.run(["/usr/bin/uname", "-m"], capture_output=True, text=True, check=False).stdout.strip(),
+            "python_file": subprocess.run(["/usr/bin/file", sys.executable], capture_output=True, text=True, check=False).stdout.strip(),
+        },
+    }
+    with urlopen(Request(_debug_server_url, data=json.dumps(_debug_payload).encode(), headers={"Content-Type": "application/json"}), timeout=0.25):
+        pass
+except Exception:
+    pass
+# #endregion
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -24,7 +63,11 @@ import streamlit as st
 from raw_preprocessing import crop_raw_image
 
 # --- Constants ---
-MODEL_CANDIDATES = [
+ONNX_MODEL_CANDIDATES = [
+    "complex_unet_edi_best.onnx",
+    "complex_unet_edi_last.onnx",
+]
+KERAS_MODEL_CANDIDATES = [
     "complex_unet_edi_best.keras",
     "complex_unet_edi_last.keras",
     "complex_unet_enhancedv5.keras",
@@ -65,19 +108,20 @@ PALETTE = {
 
 # #region debug-point A:reporter
 def report_debug_event(hypothesis_id, location, message, data=None, run_id="pre-fix"):
-    env_path = Path(".dbg/streamlit-upload-crash.env")
     server_url = "http://127.0.0.1:7777/event"
-    session_id = "streamlit-upload-crash"
+    session_id = "numpy-arch-mismatch"
 
-    try:
-        env_text = env_path.read_text()
-        for line in env_text.splitlines():
-            if line.startswith("DEBUG_SERVER_URL="):
-                server_url = line.split("=", 1)[1].strip()
-            elif line.startswith("DEBUG_SESSION_ID="):
-                session_id = line.split("=", 1)[1].strip()
-    except Exception:
-        pass
+    for env_path in (Path(".dbg/numpy-arch-mismatch.env"), Path(".dbg/streamlit-upload-crash.env")):
+        try:
+            env_text = env_path.read_text()
+            for line in env_text.splitlines():
+                if line.startswith("DEBUG_SERVER_URL="):
+                    server_url = line.split("=", 1)[1].strip()
+                elif line.startswith("DEBUG_SESSION_ID="):
+                    session_id = line.split("=", 1)[1].strip()
+            break
+        except Exception:
+            pass
 
     payload = {
         "sessionId": session_id,
@@ -110,14 +154,77 @@ def get_runtime_config(name, default=None):
         return default
 
 
+def is_onnx_runtime_available() -> bool:
+    return importlib.util.find_spec("onnxruntime") is not None
+
+
+def get_model_candidates() -> list[str]:
+    preferred_backend = str(get_runtime_config("MODEL_BACKEND", "")).strip().lower()
+    can_use_onnx = is_onnx_runtime_available()
+
+    if preferred_backend == "onnx":
+        return ONNX_MODEL_CANDIDATES + KERAS_MODEL_CANDIDATES
+
+    if preferred_backend == "keras":
+        return KERAS_MODEL_CANDIDATES + ONNX_MODEL_CANDIDATES
+
+    if can_use_onnx:
+        return ONNX_MODEL_CANDIDATES + KERAS_MODEL_CANDIDATES
+
+    return KERAS_MODEL_CANDIDATES
+
+
+def get_desktop_support_dir() -> Path | None:
+    support_dir = os.environ.get("EDI_OCT_SUPPORT_DIR")
+    if not support_dir:
+        return None
+    return Path(support_dir)
+
+
+def get_model_storage_dir() -> Path:
+    support_dir = get_desktop_support_dir()
+    if support_dir is not None:
+        model_dir = support_dir / "models"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        return model_dir
+    REMOTE_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    return REMOTE_MODEL_DIR
+
+
+def iter_model_search_paths() -> list[Path]:
+    search_paths: list[Path] = []
+    try:
+        search_paths.append(Path.cwd())
+    except FileNotFoundError:
+        pass
+
+    app_dir = Path(__file__).resolve().parent
+    search_paths.append(app_dir)
+    search_paths.append(app_dir / "bundled_models")
+
+    support_dir = get_desktop_support_dir()
+    if support_dir is not None:
+        search_paths.append(support_dir / "models")
+
+    deduplicated_paths: list[Path] = []
+    seen_paths: set[Path] = set()
+    for path in search_paths:
+        resolved_path = path.resolve()
+        if resolved_path in seen_paths:
+            continue
+        seen_paths.add(resolved_path)
+        deduplicated_paths.append(resolved_path)
+
+    return deduplicated_paths
+
+
 def download_model_if_needed():
     model_url = get_runtime_config("MODEL_URL")
     model_filename = get_runtime_config("MODEL_FILENAME", "complex_unet_edi_best.keras")
     if not model_url:
         return None
 
-    REMOTE_MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    destination = REMOTE_MODEL_DIR / model_filename
+    destination = get_model_storage_dir() / model_filename
     if destination.exists():
         return str(destination)
 
@@ -128,15 +235,22 @@ def download_model_if_needed():
 
 
 def resolve_model_path():
-    for candidate in MODEL_CANDIDATES:
-        path = Path(candidate)
-        if path.exists():
-            return str(path)
+    model_candidates = get_model_candidates()
+    for base_dir in iter_model_search_paths():
+        for candidate in model_candidates:
+            path = base_dir / candidate
+            if path.exists():
+                return str(path)
     return download_model_if_needed()
 
 
 @st.cache_resource
 def load_segmentation_model(path):
+    if Path(path).suffix.lower() == ".onnx":
+        import onnxruntime as ort
+
+        return ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+
     import tensorflow as tf
     # Delay TensorFlow/Keras imports until the user actually uploads an image.
     from tensorflow.keras.models import load_model
@@ -155,6 +269,12 @@ def load_segmentation_model(path):
             "GroupNormalization": GroupNormalization,
         },
     )
+
+
+def get_model_backend(model_path):
+    if Path(model_path).suffix.lower() == ".onnx":
+        return "onnx"
+    return "tensorflow"
 
 
 def init_session_state():
@@ -307,6 +427,12 @@ def measurement_download_bytes(df):
 
 
 def run_segmentation_inference(model_path, batch):
+    if get_model_backend(model_path) == "onnx":
+        session = load_segmentation_model(model_path)
+        input_name = session.get_inputs()[0].name
+        outputs = session.run(None, {input_name: batch.astype(np.float32)})
+        return outputs[0]
+
     worker_script = """
 import os
 import sys
@@ -528,11 +654,12 @@ if model_path is None:
     status.update(label="Model file is missing.", state="error")
     st.error(
         "No model file was found. Expected one of: "
-        + ", ".join(MODEL_CANDIDATES)
+        + ", ".join(get_model_candidates())
     )
     st.stop()
 
 try:
+    model_backend = get_model_backend(model_path)
     # #region debug-point A:model-path
     report_debug_event(
         "A",
@@ -550,9 +677,10 @@ try:
     report_debug_event(
         "A",
         "app.py:model",
-        "Model load deferred to isolated inference worker",
+        "Model backend selected",
         {
-            "worker_strategy": "subprocess",
+            "model_backend": model_backend,
+            "worker_strategy": "in_process" if model_backend == "onnx" else "subprocess",
         },
     )
     # #endregion

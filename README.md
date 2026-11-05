@@ -1,62 +1,45 @@
 # GaziGoz Team EDI OCT Streamlit App
 
-This repository contains the Streamlit app for EDI OCT segmentation and measurement.
+Streamlit app for EDI OCT segmentation and measurement (496x496 U-Net, 13 retinal
+layers) running on ONNX Runtime.
+
+## Repository Contents
+
+- `app.py` - Streamlit application
+- `raw_preprocessing.py` - cropping and preprocessing helpers
+- `simple_unet.py` - `GroupNormalization` layer for the TensorFlow/Keras path
+- `requirements.txt` - ONNX Runtime dependency set used by the deployment
+- `complex_unet_edi_best.onnx` - segmentation model (38 MB)
+- `README.md`
+
+Training notebooks and annotation JSONs live outside this repository.
 
 ## Local Run
 
-Use a Python environment with the packages from `requirements.txt`, then run:
-
 ```bash
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
+The app prefers the ONNX model whenever `onnxruntime` is installed, so no
+TensorFlow is needed for the deployed path.
+
 ## Deploy To Streamlit Community Cloud
 
-### Important
+1. Push this repository to GitHub.
+2. Open https://share.streamlit.io and sign in with GitHub.
+3. Create a new app with:
+   - Repository: this repository
+   - Branch: `main`
+   - Main file path: `app.py`
+   - Python version: `3.11`
+4. Deploy.
 
-The trained `.keras` model files are larger than GitHub's normal file size limit, so they should **not** be committed directly into the repository.
+No secrets or configuration are required because the ONNX model is included in
+the repository. The app is then reachable at `https://<app-name>.streamlit.app`.
 
-Instead, keep the app code in GitHub and provide the model through a downloadable URL.
+## Model Access
 
-## Recommended GitHub Setup
-
-1. Push this app code to your GitHub repository.
-2. Create a GitHub Release in that repository.
-3. Upload your chosen model file, for example:
-   - `complex_unet_edi_best.keras`
-4. Copy the direct download URL for that release asset.
-
-Example release asset URL format:
-
-```text
-https://github.com/emirdoogan/gazigozteam/releases/download/v1/complex_unet_edi_best.keras
-```
-
-## Streamlit Cloud Secrets
-
-In Streamlit Community Cloud, add these secrets:
-
-```toml
-MODEL_URL = "https://github.com/emirdoogan/gazigozteam/releases/download/v1/complex_unet_edi_best.keras"
-MODEL_FILENAME = "complex_unet_edi_best.keras"
-```
-
-The app will:
-
-- first look for a local `.keras` model file
-- if no local file exists, download the model from `MODEL_URL`
-
-## Files To Keep In The Repo
-
-- `app.py`
-- `raw_preprocessing.py`
-- `simple_unet.py`
-- `requirements.txt`
-- `README.md`
-
-## Files Not Recommended For The Repo
-
-- training images
-- masks
-- logs
-- large model artifacts committed directly to git
+- a local `.onnx` model in the project root is used first
+- otherwise a local `.keras` model is used (requires TensorFlow)
+- otherwise the app falls back to `MODEL_URL` / `MODEL_FILENAME` from secrets

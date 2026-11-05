@@ -9,3 +9,25 @@ data/
 *.h5
 *.csv
 /tmp/
+.desktop_runtime/
+.streamlit/secrets.toml
+dist/
+
+# Training data and notebooks (kept locally, not shipped)
+jsons/
+*.ipynb
+
+# Desktop packaging artifacts (not needed for the cloud deployment)
+*.command
+*.sh
+desktop_launcher.py
+export_to_onnx.py
+*.plist
+DESKTOP_DISTRIBUTION.md
+MODEL_PORTABILITY_PLAN.md
+allsummary.md
+debug-*.md
+
+# Local debug and portability test scaffolding
+.dbg/
+.portability_test/
