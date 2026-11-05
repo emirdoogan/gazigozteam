@@ -841,22 +841,6 @@ with preview_tab:
     original_image_bytes = encode_image_for_streamlit(raw_gray)
     cropped_image_bytes = encode_image_for_streamlit(raw_norm)
     color_mask_bytes = encode_image_for_streamlit(color_mask)
-    overlay_bytes = encode_image_for_streamlit(overlay)
-
-    # #region debug-point D:image-display-payloads
-    report_debug_event(
-        "D",
-        "app.py:preview_tab",
-        "Prepared image payloads for Streamlit rendering",
-        {
-            "file_name": uploaded.name,
-            "original_size": list(original_image_bytes.size),
-            "cropped_size": list(cropped_image_bytes.size),
-            "mask_size": list(color_mask_bytes.size),
-            "overlay_size": list(overlay_bytes.size),
-        },
-    )
-    # #endregion
     img_col1, img_col2 = st.columns(2)
     with img_col1:
         st.image(
@@ -913,6 +897,23 @@ with preview_tab:
     roi_width_um = roi_width_px * um_per_px
     overlay = color_mask.copy()
     cv2.rectangle(overlay, (col_start, 0), (col_end - 1, h - 1), (255, 255, 255), 2)
+    overlay_bytes = encode_image_for_streamlit(overlay)
+
+    # #region debug-point D:image-display-payloads
+    report_debug_event(
+        "D",
+        "app.py:preview_tab",
+        "Prepared image payloads for Streamlit rendering",
+        {
+            "file_name": uploaded.name,
+            "original_size": list(original_image_bytes.size),
+            "cropped_size": list(cropped_image_bytes.size),
+            "mask_size": list(color_mask_bytes.size),
+            "overlay_size": list(overlay_bytes.size),
+            "roi_range": [int(col_start), int(col_end)],
+        },
+    )
+    # #endregion
 
     roi_stat1, roi_stat2, roi_stat3 = st.columns(3)
     roi_stat1.metric("Start Column", col_start)
