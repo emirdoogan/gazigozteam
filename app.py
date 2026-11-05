@@ -58,6 +58,7 @@ except Exception:
 import cv2
 import numpy as np
 import pandas as pd
+from PIL import Image
 import streamlit as st
 
 from raw_preprocessing import crop_raw_image
@@ -286,8 +287,26 @@ def init_session_state():
         st.session_state.roi_image_name = None
 
 
-def encode_image_for_streamlit(image: np.ndarray) -> bytes:
+def encode_image_for_streamlit(image: np.ndarray) -> Image.Image:
     array = np.asarray(image)
+
+    # #region debug-point A:image-encode-input
+    try:
+        report_debug_event(
+            "A",
+            "app.py:encode_image_for_streamlit:input",
+            "Preparing image for Streamlit display",
+            {
+                "shape": list(array.shape),
+                "dtype": str(array.dtype),
+                "ndim": int(array.ndim),
+                "min": float(np.min(array)),
+                "max": float(np.max(array)),
+            },
+        )
+    except Exception:
+        pass
+    # #endregion
 
     if array.ndim == 2:
         if np.issubdtype(array.dtype, np.floating):
@@ -301,16 +320,43 @@ def encode_image_for_streamlit(image: np.ndarray) -> bytes:
             array = (array * 255).astype(np.uint8)
         else:
             array = np.clip(array, 0, 255).astype(np.uint8)
-
-        # Streamlit expects RGB for numpy arrays, while OpenCV encodes color images as BGR.
-        array = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
     else:
+        # #region debug-point B:image-encode-shape-error
+        try:
+            report_debug_event(
+                "B",
+                "app.py:encode_image_for_streamlit:shape",
+                "Unsupported image shape encountered before Streamlit display",
+                {
+                    "shape": list(array.shape),
+                    "dtype": str(array.dtype),
+                },
+            )
+        except Exception:
+            pass
+        # #endregion
         raise ValueError(f"Unsupported image shape for display: {array.shape}")
 
-    ok, encoded = cv2.imencode(".png", array)
-    if not ok:
-        raise ValueError("Failed to encode image for display.")
-    return encoded.tobytes()
+    # #region debug-point A:image-encode-output
+    try:
+        report_debug_event(
+            "A",
+            "app.py:encode_image_for_streamlit:output",
+            "Image prepared for Streamlit display",
+            {
+                "shape": list(array.shape),
+                "dtype": str(array.dtype),
+                "mode": "L" if array.ndim == 2 else "RGB",
+                "height": int(array.shape[0]),
+                "width": int(array.shape[1]),
+            },
+        )
+    except Exception:
+        pass
+    # #endregion
+    if array.ndim == 2:
+        return Image.fromarray(array, mode="L")
+    return Image.fromarray(array, mode="RGB")
 
 
 def build_summary_row(image_name, scale_px, roi_width_px, roi_width_um, layer_df, composite_df):
@@ -792,16 +838,35 @@ preview_tab, measurement_tab, history_tab = st.tabs([
 
 with preview_tab:
     st.subheader("Image Review")
+    original_image_bytes = encode_image_for_streamlit(raw_gray)
+    cropped_image_bytes = encode_image_for_streamlit(raw_norm)
+    color_mask_bytes = encode_image_for_streamlit(color_mask)
+    overlay_bytes = encode_image_for_streamlit(overlay)
+
+    # #region debug-point D:image-display-payloads
+    report_debug_event(
+        "D",
+        "app.py:preview_tab",
+        "Prepared image payloads for Streamlit rendering",
+        {
+            "file_name": uploaded.name,
+            "original_size": list(original_image_bytes.size),
+            "cropped_size": list(cropped_image_bytes.size),
+            "mask_size": list(color_mask_bytes.size),
+            "overlay_size": list(overlay_bytes.size),
+        },
+    )
+    # #endregion
     img_col1, img_col2 = st.columns(2)
     with img_col1:
         st.image(
-            encode_image_for_streamlit(raw_gray),
+            original_image_bytes,
             caption="Original Upload",
             use_container_width=True,
         )
     with img_col2:
         st.image(
-            encode_image_for_streamlit(raw_norm),
+            cropped_image_bytes,
             caption="Cropped & Resized",
             use_container_width=True,
         )
@@ -866,13 +931,13 @@ with preview_tab:
     seg_col1, seg_col2 = st.columns(2)
     with seg_col1:
         st.image(
-            encode_image_for_streamlit(color_mask),
+            color_mask_bytes,
             caption="Color-coded Mask",
             use_container_width=True,
         )
     with seg_col2:
         st.image(
-            encode_image_for_streamlit(overlay),
+            overlay_bytes,
             caption=f"ROI overlay: {roi_width_px}px (~{roi_width_um:.0f} µm)",
             use_container_width=True,
         )
