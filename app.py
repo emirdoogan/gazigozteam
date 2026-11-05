@@ -286,6 +286,33 @@ def init_session_state():
         st.session_state.roi_image_name = None
 
 
+def encode_image_for_streamlit(image: np.ndarray) -> bytes:
+    array = np.asarray(image)
+
+    if array.ndim == 2:
+        if np.issubdtype(array.dtype, np.floating):
+            array = np.clip(array, 0.0, 1.0)
+            array = (array * 255).astype(np.uint8)
+        else:
+            array = np.clip(array, 0, 255).astype(np.uint8)
+    elif array.ndim == 3 and array.shape[2] == 3:
+        if np.issubdtype(array.dtype, np.floating):
+            array = np.clip(array, 0.0, 1.0)
+            array = (array * 255).astype(np.uint8)
+        else:
+            array = np.clip(array, 0, 255).astype(np.uint8)
+
+        # Streamlit expects RGB for numpy arrays, while OpenCV encodes color images as BGR.
+        array = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+    else:
+        raise ValueError(f"Unsupported image shape for display: {array.shape}")
+
+    ok, encoded = cv2.imencode(".png", array)
+    if not ok:
+        raise ValueError("Failed to encode image for display.")
+    return encoded.tobytes()
+
+
 def build_summary_row(image_name, scale_px, roi_width_px, roi_width_um, layer_df, composite_df):
     row = {
         "Image": image_name,
@@ -767,9 +794,17 @@ with preview_tab:
     st.subheader("Image Review")
     img_col1, img_col2 = st.columns(2)
     with img_col1:
-        st.image(raw_gray, caption="Original Upload", clamp=True, use_container_width=True)
+        st.image(
+            encode_image_for_streamlit(raw_gray),
+            caption="Original Upload",
+            use_container_width=True,
+        )
     with img_col2:
-        st.image(raw_norm, caption="Cropped & Resized", clamp=True, use_container_width=True)
+        st.image(
+            encode_image_for_streamlit(raw_norm),
+            caption="Cropped & Resized",
+            use_container_width=True,
+        )
 
     st.subheader("ROI Selection")
     st.caption("Drag the range handles or use the quick actions to position the measurement region.")
@@ -830,10 +865,14 @@ with preview_tab:
     st.subheader("Segmentation")
     seg_col1, seg_col2 = st.columns(2)
     with seg_col1:
-        st.image(color_mask, caption="Color-coded Mask", use_container_width=True)
+        st.image(
+            encode_image_for_streamlit(color_mask),
+            caption="Color-coded Mask",
+            use_container_width=True,
+        )
     with seg_col2:
         st.image(
-            overlay,
+            encode_image_for_streamlit(overlay),
             caption=f"ROI overlay: {roi_width_px}px (~{roi_width_um:.0f} µm)",
             use_container_width=True,
         )
