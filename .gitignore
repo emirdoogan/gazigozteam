@@ -22,6 +22,7 @@ jsons/
 *.sh
 desktop_launcher.py
 export_to_onnx.py
+requirements-onnx.txt
 *.plist
 DESKTOP_DISTRIBUTION.md
 MODEL_PORTABILITY_PLAN.md
