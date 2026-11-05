@@ -1,4 +1,5 @@
 from datetime import datetime
+import base64
 import json
 import importlib.util
 import os
@@ -58,8 +59,8 @@ except Exception:
 import cv2
 import numpy as np
 import pandas as pd
-from PIL import Image
 import streamlit as st
+import streamlit.components.v1 as components
 
 from raw_preprocessing import crop_raw_image
 
@@ -287,7 +288,7 @@ def init_session_state():
         st.session_state.roi_image_name = None
 
 
-def encode_image_for_streamlit(image: np.ndarray) -> Image.Image:
+def encode_image_for_streamlit(image: np.ndarray) -> str:
     array = np.asarray(image)
 
     # #region debug-point A:image-encode-input
@@ -354,9 +355,36 @@ def encode_image_for_streamlit(image: np.ndarray) -> Image.Image:
     except Exception:
         pass
     # #endregion
-    if array.ndim == 2:
-        return Image.fromarray(array, mode="L")
-    return Image.fromarray(array, mode="RGB")
+
+    if array.ndim == 3:
+        array = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+
+    success, encoded = cv2.imencode(".png", array)
+    if not success:
+        raise ValueError("Failed to encode image for inline display.")
+
+    return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+def render_inline_image(image: np.ndarray, caption: str) -> str:
+    image_base64 = encode_image_for_streamlit(image)
+    height = max(220, int(np.asarray(image).shape[0] * 320 / max(1, np.asarray(image).shape[1])) + 36)
+    components.html(
+        (
+            '<div style="margin:0;padding:0;">'
+            f'<img src="data:image/png;base64,{image_base64}" '
+            f'alt="{caption}" '
+            'style="width:100%;height:auto;display:block;border-radius:0.5rem;" />'
+            f'<div style="color: rgb(250,250,250); font-family: Source Sans Pro, sans-serif; '
+            'font-size: 0.95rem; text-align: center; margin-top: 0.5rem;">'
+            f'{caption}'
+            '</div>'
+            '</div>'
+        ),
+        height=height,
+        scrolling=False,
+    )
+    return image_base64
 
 
 def build_summary_row(image_name, scale_px, roi_width_px, roi_width_um, layer_df, composite_df):
@@ -838,22 +866,11 @@ preview_tab, measurement_tab, history_tab = st.tabs([
 
 with preview_tab:
     st.subheader("Image Review")
-    original_image_bytes = encode_image_for_streamlit(raw_gray)
-    cropped_image_bytes = encode_image_for_streamlit(raw_norm)
-    color_mask_bytes = encode_image_for_streamlit(color_mask)
     img_col1, img_col2 = st.columns(2)
     with img_col1:
-        st.image(
-            original_image_bytes,
-            caption="Original Upload",
-            use_container_width=True,
-        )
+        original_image_bytes = render_inline_image(raw_gray, "Original Upload")
     with img_col2:
-        st.image(
-            cropped_image_bytes,
-            caption="Cropped & Resized",
-            use_container_width=True,
-        )
+        cropped_image_bytes = render_inline_image(raw_norm, "Cropped & Resized")
 
     st.subheader("ROI Selection")
     st.caption("Drag the range handles or use the quick actions to position the measurement region.")
@@ -897,6 +914,7 @@ with preview_tab:
     roi_width_um = roi_width_px * um_per_px
     overlay = color_mask.copy()
     cv2.rectangle(overlay, (col_start, 0), (col_end - 1, h - 1), (255, 255, 255), 2)
+    color_mask_bytes = encode_image_for_streamlit(color_mask)
     overlay_bytes = encode_image_for_streamlit(overlay)
 
     # #region debug-point D:image-display-payloads
@@ -906,10 +924,10 @@ with preview_tab:
         "Prepared image payloads for Streamlit rendering",
         {
             "file_name": uploaded.name,
-            "original_size": list(original_image_bytes.size),
-            "cropped_size": list(cropped_image_bytes.size),
-            "mask_size": list(color_mask_bytes.size),
-            "overlay_size": list(overlay_bytes.size),
+            "original_base64_len": len(original_image_bytes),
+            "cropped_base64_len": len(cropped_image_bytes),
+            "mask_base64_len": len(color_mask_bytes),
+            "overlay_base64_len": len(overlay_bytes),
             "roi_range": [int(col_start), int(col_end)],
         },
     )
@@ -931,16 +949,36 @@ with preview_tab:
     st.subheader("Segmentation")
     seg_col1, seg_col2 = st.columns(2)
     with seg_col1:
-        st.image(
-            color_mask_bytes,
-            caption="Color-coded Mask",
-            use_container_width=True,
+        components.html(
+            (
+                '<div style="margin:0;padding:0;">'
+                f'<img src="data:image/png;base64,{color_mask_bytes}" '
+                'alt="Color-coded Mask" '
+                'style="width:100%;height:auto;display:block;border-radius:0.5rem;" />'
+                '<div style="color: rgb(250,250,250); font-family: Source Sans Pro, sans-serif; '
+                'font-size: 0.95rem; text-align: center; margin-top: 0.5rem;">'
+                'Color-coded Mask'
+                '</div>'
+                '</div>'
+            ),
+            height=356,
+            scrolling=False,
         )
     with seg_col2:
-        st.image(
-            overlay_bytes,
-            caption=f"ROI overlay: {roi_width_px}px (~{roi_width_um:.0f} µm)",
-            use_container_width=True,
+        components.html(
+            (
+                '<div style="margin:0;padding:0;">'
+                f'<img src="data:image/png;base64,{overlay_bytes}" '
+                f'alt="ROI overlay: {roi_width_px}px (~{roi_width_um:.0f} µm)" '
+                'style="width:100%;height:auto;display:block;border-radius:0.5rem;" />'
+                f'<div style="color: rgb(250,250,250); font-family: Source Sans Pro, sans-serif; '
+                'font-size: 0.95rem; text-align: center; margin-top: 0.5rem;">'
+                f'ROI overlay: {roi_width_px}px (~{roi_width_um:.0f} µm)'
+                '</div>'
+                '</div>'
+            ),
+            height=356,
+            scrolling=False,
         )
 
 info_col1, info_col2, info_col3 = st.columns(3)
